@@ -5,6 +5,31 @@
 
 name: github-repo-analytics
 
+# --------------------------------------------------------------------------------------------------
+# Shared definitions
+# --------------------------------------------------------------------------------------------------
+x-backend-environment: &backend-environment
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Missing .env - run ./scripts/bootstrap-env.sh first}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-false}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,api}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+  REPOSITORY_CREATE_THROTTLE: ${REPOSITORY_CREATE_THROTTLE:-30/min}
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing .env - run ./scripts/bootstrap-env.sh first}
+  GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  DATABASE_HOST: postgres
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: ${ANALYTICS_DB_NAME:-analytics}
+  DATABASE_USER: ${ANALYTICS_DB_USER:-analytics}
+  DATABASE_PASSWORD: ${ANALYTICS_DB_PASSWORD:?Missing .env - run ./scripts/bootstrap-env.sh first}
+
+x-backend: &backend
+  build:
+    context: ./backend
+    target: runtime
+  image: github-repo-analytics-backend:local
+  environment: *backend-environment
+  restart: unless-stopped
+
 services:
   # ------------------------------------------------------------------------------------------------
   # Infrastructure
@@ -45,6 +70,52 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+
+  # ------------------------------------------------------------------------------------------------
+  # Django
+  # ------------------------------------------------------------------------------------------------
+  backend-migrate:
+    <<: *backend
+    # One-shot: applies Django migrations, then exits. `api` waits for it.
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+
+  # ------------------------------------------------------------------------------------------------
+  # Test runners: `docker compose --profile test run --rm <service>`
+  # ------------------------------------------------------------------------------------------------
+  backend-tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    image: github-repo-analytics-backend-tests:local
+    environment: *backend-environment
+    # Lint, format check, then the test suite against a throwaway PostgreSQL database.
+    command: ["sh", "-c", "ruff check . && ruff format --check . && pytest"]
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres-data:

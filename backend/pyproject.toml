@@ -1,0 +1,26 @@
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+testpaths = ["analytics/tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+extend-exclude = ["analytics/migrations"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W",  # pycodestyle and pyflakes
+  "I",            # import order
+  "B",            # likely bugs
+  "UP",           # modern Python idioms
+  "SIM", "C4", "RET",
+  "DJ",           # Django
+  "PT",           # pytest style
+  "S",            # security (bandit)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, and use obviously fake tokens.
+"analytics/tests/*" = ["S101", "S105", "S106"]

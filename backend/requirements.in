@@ -1,0 +1,8 @@
+# Direct runtime dependencies of the Django backend.
+# After editing, regenerate requirements.txt (command in docs/DEVELOPMENT.md).
+Django==5.2.19
+djangorestframework==3.18.3
+django-cors-headers==4.9.0
+psycopg[binary]==3.3.8
+gunicorn==26.2.0
+requests==2.34.2
