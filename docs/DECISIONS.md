@@ -231,3 +231,62 @@ calls to the API server are rejected.
 **Trade-off.** Adding a deferrable operator later means adding the triggerer service. Moving to
 Airflow 3.4 also means switching the database URLs to the `psycopg` (version 3) driver that
 release adopts as its default.
+
+## 17. Two Celery systems on one Redis, isolated three ways
+
+**Decision.** Airflow's CeleryExecutor and Django's Celery application share the Redis container
+and nothing else. Airflow uses Redis database 0 and the queue `airflow_tasks`; Django uses database
+1 and the queue `django_reports`. Each has its own worker container that subscribes to its own
+queue only. Both run the same Celery, kombu and redis-py versions, taken from Airflow's constraints
+file.
+
+**Why.** Kombu keeps queues and bookkeeping per Redis database, so separate databases already make
+it impossible for one worker to see the other's messages. Distinct queue names and separate task
+registries are a second and third barrier, and make the separation obvious when inspecting Redis.
+
+**Trade-off.** One Redis process is a shared point of failure for both. In production they would
+normally be separate brokers, or at least separately sized.
+
+## 18. A report's state lives in its database row, and requests are idempotent
+
+**Decision.** There is one `DailyReport` row per snapshot date. The request endpoint chooses the
+Celery task id, stores it with the row as `queued`, commits, and only then publishes the message.
+A repeated request does nothing while the report is queued or running, and nothing when the same
+DAG run asks again for a completed report; a different run regenerates it; failed or stale reports
+are queued again. The worker only starts a report whose stored task id matches its own. If
+publishing fails, the row is marked failed and the API answers 503. Django's Celery has no result
+backend.
+
+**Why.** The row is what the dashboard reads, so it must never claim more than is true: `queued`
+always has a message behind it, `running` belongs to one identifiable task, and duplicate or stale
+deliveries are recognised and dropped. A result backend would be a second, weaker copy of the same
+information.
+
+**Trade-off.** A report whose message is lost (Redis restarted) stays `queued` until the staleness
+window of 15 minutes has passed and someone requests it again.
+
+## 19. The DAG does not wait for the report
+
+**Decision.** `trigger_daily_report` succeeds when Django answers 202 Accepted. It does not poll
+for completion.
+
+**Why.** It keeps the two responsibilities distinct: a successful DAG run means "metrics collected
+and report requested", and the report's own lifecycle is shown in the dashboard and at
+`/api/reports/`. A worker slot is not held while another system works.
+
+**Trade-off.** A report that fails does not turn the DAG run red. If that coupling were wanted, the
+bounded way to add it is a sensor in reschedule mode with a timeout, polling an internal status
+endpoint.
+
+## 20. No pipeline-run table in Django
+
+**Decision.** `/api/pipeline/status/` is derived from stored data: the newest collection time, how
+many active repositories have a snapshot for the newest date, and the latest report. Django keeps
+no copy of Airflow's DAG run state.
+
+**Why.** Airflow is the source of truth for run state and cannot reliably report its own failures
+to another system (a run that cannot reach Django cannot tell Django it failed). Deriving the status
+from data needs no extra writes and cannot drift.
+
+**Trade-off.** The dashboard shows what was collected, not why a run failed; for that it links to
+the Airflow UI.

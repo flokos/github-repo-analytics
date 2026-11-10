@@ -66,3 +66,12 @@ class GitHubTimeout(AnalyticsError):
 
 class GitHubUnavailable(AnalyticsError):
     default_message = "GitHub is temporarily unavailable. Try again in a moment."
+
+
+# --- Daily reports --------------------------------------------------------------------------------
+class NoSnapshotsForDate(AnalyticsError):
+    default_message = "No snapshots were collected for this date, so there is nothing to report."
+
+
+class ReportDispatchFailed(AnalyticsError):
+    default_message = "The report could not be queued right now. Try again in a moment."

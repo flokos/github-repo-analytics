@@ -16,6 +16,8 @@ x-backend-environment: &backend-environment
   REPOSITORY_CREATE_THROTTLE: ${REPOSITORY_CREATE_THROTTLE:-30/min}
   INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?Missing .env - run ./scripts/bootstrap-env.sh first}
   GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+  # Django Celery broker: Redis database 1. Database 0 belongs to Airflow.
+  CELERY_BROKER_URL: redis://redis:6379/1
   DATABASE_HOST: postgres
   DATABASE_PORT: "5432"
   DATABASE_NAME: ${ANALYTICS_DB_NAME:-analytics}
@@ -147,6 +149,32 @@ services:
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  django-worker:
+    <<: *backend
+    # Django's own Celery worker. It consumes only the `django_reports` queue on Redis database 1
+    # and has nothing to do with the Airflow Celery worker further down.
+    command:
+      - celery
+      - --app=config
+      - worker
+      - --queues=django_reports
+      - --hostname=django@%h
+      - --concurrency=2
+      - --loglevel=INFO
+    healthcheck:
+      test: ["CMD-SHELL", "celery --app=config inspect ping --destination django@$$HOSTNAME --timeout 5"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   # ------------------------------------------------------------------------------------------------
   # Airflow (CeleryExecutor)

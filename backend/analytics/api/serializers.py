@@ -136,3 +136,16 @@ class SnapshotWriteResultSerializer(serializers.Serializer):
     repository_id = serializers.IntegerField(source="snapshot.repository_id")
     snapshot_date = serializers.DateField(source="snapshot.snapshot_date")
     outcome = serializers.CharField()
+
+
+class ReportRequestSerializer(serializers.Serializer):
+    snapshot_date = serializers.DateField()
+    # Identifies the requesting DAG run, which makes a retried request recognisable.
+    dag_run_id = serializers.CharField(max_length=250, required=False, allow_blank=True, default="")
+
+
+class ReportRequestResultSerializer(serializers.Serializer):
+    id = serializers.IntegerField(source="report.id")
+    snapshot_date = serializers.DateField(source="report.snapshot_date")
+    status = serializers.CharField(source="report.status")
+    enqueued = serializers.BooleanField()

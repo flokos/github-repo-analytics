@@ -12,11 +12,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from analytics.application import queries
+from analytics.application.reports import request_daily_report
 from analytics.application.snapshots import SnapshotInput, SnapshotOutcome, record_snapshot
+from analytics.tasks import dispatch_report_generation
 
 from .authentication import InternalTokenAuthentication, IsInternalService
 from .serializers import (
     ActiveRepositorySerializer,
+    ReportRequestResultSerializer,
+    ReportRequestSerializer,
     SnapshotWriteResultSerializer,
     SnapshotWriteSerializer,
 )
@@ -49,3 +53,23 @@ class SnapshotIngestView(InternalAPIView):
             SnapshotWriteResultSerializer(result).data,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+
+class ReportRequestView(InternalAPIView):
+    """Task 4 of the DAG: ask for the daily report of one snapshot date.
+
+    Answers 202 Accepted: the report is only queued here. A Django Celery worker generates it,
+    and its progress is visible at `/api/reports/`. Repeating the request is safe.
+    """
+
+    def post(self, request):
+        serializer = ReportRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        result = request_daily_report(
+            serializer.validated_data["snapshot_date"],
+            run_id=serializer.validated_data["dag_run_id"],
+            dispatch=dispatch_report_generation,
+        )
+
+        return Response(ReportRequestResultSerializer(result).data, status=status.HTTP_202_ACCEPTED)

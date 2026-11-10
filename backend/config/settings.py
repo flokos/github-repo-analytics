@@ -103,6 +103,34 @@ GITHUB_TOKEN = env("GITHUB_TOKEN")
 GITHUB_CONNECT_TIMEOUT_SECONDS = 3.05
 GITHUB_READ_TIMEOUT_SECONDS = 8.0
 
+# --- Django Celery (daily report generation) ------------------------------------------------------
+# Redis database 1 and the `django_reports` queue belong to Django. Airflow's CeleryExecutor uses
+# database 0 and its own queue, so neither worker can ever see the other's messages.
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", "redis://redis:6379/1")
+CELERY_TASK_DEFAULT_QUEUE = "django_reports"
+# No result backend: a report's outcome is recorded on its DailyReport row, where the API reads it.
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TIMEZONE = "UTC"
+# One message at a time per worker process, acknowledged after the work is done.
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_TASK_SOFT_TIME_LIMIT = 60
+CELERY_TASK_TIME_LIMIT = 90
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_TIMEOUT = 3
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    # Must exceed the task time limit: an unacknowledged message is redelivered after this long.
+    "visibility_timeout": 600,
+    "socket_connect_timeout": 3,
+}
+
+# A report that has been queued or running for longer than this is considered stuck (for example
+# its message was lost with a Redis restart) and may be requested again.
+REPORT_STALE_AFTER_SECONDS = 900
+
 # --- Logging --------------------------------------------------------------------------------------
 LOGGING = {
     "version": 1,

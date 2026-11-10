@@ -6,3 +6,13 @@ django-cors-headers==4.9.0
 psycopg[binary]==3.3.8
 gunicorn==26.2.0
 requests==2.34.2
+# Celery stack: exactly the versions that Airflow 3.3.2's constraints file pins, so the Django
+# worker and Airflow's CeleryExecutor run the same Celery, kombu and Redis client.
+celery==5.6.3
+kombu==5.6.2
+billiard==4.2.4
+amqp==5.3.1
+vine==5.1.0
+redis==6.4.0
+# Celery only sets a lower bound here; newer major versions are not what it is tested with.
+python-dateutil==2.9.0.post0

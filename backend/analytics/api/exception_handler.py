@@ -36,6 +36,9 @@ _DOMAIN_ERRORS: dict[type[errors.AnalyticsError], tuple[int, str]] = {
     errors.GitHubRateLimited: (status.HTTP_503_SERVICE_UNAVAILABLE, "github_rate_limited"),
     errors.GitHubTimeout: (status.HTTP_504_GATEWAY_TIMEOUT, "github_timeout"),
     errors.GitHubUnavailable: (status.HTTP_502_BAD_GATEWAY, "github_unavailable"),
+    # Daily reports (internal API).
+    errors.NoSnapshotsForDate: (status.HTTP_422_UNPROCESSABLE_ENTITY, "no_snapshots_for_date"),
+    errors.ReportDispatchFailed: (status.HTTP_503_SERVICE_UNAVAILABLE, "report_dispatch_failed"),
 }
 
 _DRF_CODES: dict[type[exceptions.APIException], str] = {

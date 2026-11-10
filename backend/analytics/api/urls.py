@@ -26,4 +26,9 @@ urlpatterns = [
         internal_views.SnapshotIngestView.as_view(),
         name="internal-snapshots",
     ),
+    path(
+        "internal/reports/",
+        internal_views.ReportRequestView.as_view(),
+        name="internal-reports",
+    ),
 ]
