@@ -1,0 +1,6 @@
+# Shell scripts run inside Linux containers, so they must keep LF line endings on every platform.
+* text=auto eol=lf
+*.sh text eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
