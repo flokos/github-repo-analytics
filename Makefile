@@ -1,6 +1,6 @@
 # Convenience wrappers around the documented `docker compose` commands.
 .DEFAULT_GOAL := help
-.PHONY: help env up down ps logs clean test test-backend
+.PHONY: help env up down ps logs clean test test-backend test-airflow trigger
 
 help: ## List the available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  %-16s %s\n", $$1, $$2}'
@@ -20,10 +20,16 @@ ps: ## Show service status and health
 logs: ## Follow the logs of every service
 	docker compose logs --follow --tail 100
 
-test: test-backend ## Run every test suite in containers
+test: test-backend test-airflow ## Run every test suite in containers
 
 test-backend: env ## Lint and test the Django backend
 	docker compose --profile test run --rm --build backend-tests
+
+test-airflow: ## Lint and test the Airflow DAG
+	docker compose --profile test run --rm --build airflow-tests
+
+trigger: ## Start a pipeline run now instead of waiting for the schedule
+	docker compose exec airflow-scheduler airflow dags trigger github_metrics_daily
 
 clean: ## Stop the stack and delete all data volumes
 	docker compose down --volumes --remove-orphans

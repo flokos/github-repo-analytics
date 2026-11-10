@@ -129,3 +129,105 @@ old DAG run would write today's numbers into the past. Deriving the date from th
 retries, repeated runs and late deliveries all safe.
 
 **Trade-off.** History cannot be backfilled, which is also why the DAG runs with `catchup=False`.
+
+## 10. Each repository is processed by its own mapped task group
+
+**Decision.** The DAG maps a task group, `collect_repository`, over the list of active repositories
+that Django returns at run time. Inside the group, `fetch_metrics`, `validate_metrics` and
+`persist_snapshot` run in sequence for one repository. `validate_metrics` checks, among other
+things, that the id GitHub returns equals the `github_id` stored when the repository was added.
+
+**Why.** Mapping the group (rather than three separately mapped tasks) keeps each repository's
+chain independent: when one fetch fails, only that repository's later steps are affected and the
+others still store their snapshots. The three steps are separate tasks because they fail
+differently: fetching is retried, validation is deterministic and never retried, persisting is
+retried and idempotent. The id check catches a renamed repository whose old name was taken over by
+a different one, which would otherwise silently record someone else's numbers.
+
+**Trade-off.** Three task instances per repository instead of one means more scheduling overhead
+(a few seconds per task on CeleryExecutor). For a daily job over tens of repositories that is
+irrelevant; at thousands, the repositories would be processed in batches per mapped task.
+
+## 11. Airflow reads GitHub itself; Django owns persistence
+
+**Decision.** The worker calls the GitHub API directly and sends the validated result to Django's
+internal API. Django never fetches metrics on Airflow's behalf, and Airflow never touches the
+application database.
+
+**Why.** Each mapped task instance then really does the work for one repository, with its own
+retries, logs and timeout visible in Airflow, while the write path keeps a single owner that
+enforces the idempotency rules.
+
+**Trade-off.** There are two small GitHub clients: one in Django for validating a new repository,
+one in the DAG's helper package for collecting metrics. They are different deployables with
+different error handling needs, so sharing a library between the two images was judged to cost
+more than about a hundred duplicated lines.
+
+## 12. A failed repository fails the run and holds back the report
+
+**Decision.** `trigger_daily_report` uses the `none_failed` trigger rule. If every repository
+succeeds, the report is requested. If any fails, the task becomes `upstream_failed`, no report is
+requested and the DAG run is marked failed. If there are no repositories, the mapped tasks are
+skipped, the report task skips itself and the run succeeds.
+
+**Why.** A report built from a partial collection would look complete. Failing the run makes the
+problem visible in Airflow, while the snapshots of the healthy repositories are already stored.
+
+**Trade-off.** One permanently broken repository (deleted on GitHub, for example) blocks reports
+until it is removed from the dashboard. The alternative, a report flagged as partial, was rejected
+as more states for little benefit at this scale.
+
+## 13. Permanent errors fail fast; everything else retries with exponential backoff
+
+**Decision.** Tasks have `retries=3`, `retry_delay=30s`, `retry_exponential_backoff=2.0` and a
+two-minute `execution_timeout`. An Airflow 3.3 `ExceptionRetryPolicy` fails a task immediately when
+it raises a `PermanentError` (repository gone, rejected token, invalid metrics, rate limit that
+resets later than the retries can wait). Timeouts, connection errors, 5xx responses and short rate
+limits fall through to the normal retries.
+
+**Why.** Retrying a 404 three times only delays the failure by three and a half minutes. Declaring
+the rule once on the DAG keeps the helper package free of Airflow imports.
+
+**Trade-off.** Retry policies are a recent Airflow feature (3.3). The fallback, raising
+`AirflowFailException` from the task wrappers, is a small change if it is ever needed.
+
+## 14. GitHub concurrency is bounded in the DAG
+
+**Decision.** `fetch_metrics` sets `max_active_tis_per_dagrun=4` and the DAG sets
+`max_active_runs=1`, so at most four GitHub requests are in flight at any time.
+
+**Why.** The limit lives next to the code it protects and needs no setup. An Airflow pool would
+give the same bound but has to exist in the metadata database first; a task that references a
+missing pool stays queued forever.
+
+**Trade-off.** The bound is per DAG. If several DAGs called GitHub, a shared pool would be the
+right tool.
+
+## 15. Tokens reach tasks as Airflow connections defined on the worker only
+
+**Decision.** The GitHub token and the internal API token are supplied as `AIRFLOW_CONN_*`
+environment variables on the `airflow-worker` service and read inside tasks with `Connection.get`.
+They are not stored in the metadata database, not set on the scheduler, DAG processor or API
+server, and never returned from a task.
+
+**Why.** Airflow masks connection passwords in task logs, nothing is resolved while the DAG file
+is parsed, and XCom carries only ids, names and counts. The worker is the only component that runs
+task code, so it is the only one that needs the secrets.
+
+**Trade-off.** Environment-defined connections do not appear in the Airflow UI's connection list.
+
+## 16. Only the Airflow components this pipeline needs
+
+**Decision.** The stack runs the API server, scheduler, DAG processor, one Celery worker and a
+one-shot init job. There is no triggerer (no deferrable tasks) and no Flower. The FAB auth manager
+provides the UI login, as in Airflow's reference Compose file. The JWT secret, API secret key and
+Fernet key are set explicitly and identically on every Airflow service. The DAG folder is baked
+into the image and also mounted read-only, so edits show up without a rebuild.
+
+**Why.** Every container costs memory on a laptop. Explicit shared secrets avoid the most common
+Airflow 3 Compose failure, where each container generates its own JWT secret and the worker's
+calls to the API server are rejected.
+
+**Trade-off.** Adding a deferrable operator later means adding the triggerer service. Moving to
+Airflow 3.4 also means switching the database URLs to the `psycopg` (version 3) driver that
+release adopts as its default.

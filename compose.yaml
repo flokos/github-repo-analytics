@@ -30,6 +30,53 @@ x-backend: &backend
   environment: *backend-environment
   restart: unless-stopped
 
+# Every Airflow component runs the same image with the same configuration.
+x-airflow-environment: &airflow-environment
+  AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__PARALLELISM: "8"
+  # Workers talk to the API server's execution API instead of the metadata database.
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  # The next three secrets must be identical in every Airflow container. Left to their defaults,
+  # each container would generate its own and reject the others' tokens.
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?Missing .env - run ./scripts/bootstrap-env.sh first}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?Missing .env - run ./scripts/bootstrap-env.sh first}
+  AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?Missing .env - run ./scripts/bootstrap-env.sh first}
+  AIRFLOW__API_AUTH__JWT_ISSUER: airflow
+  AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_PORT:-8080}
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:?Missing .env - run ./scripts/bootstrap-env.sh first}@postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+  # CeleryExecutor: Redis database 0 as broker, PostgreSQL as result backend, a queue of its own.
+  AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+  AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql+psycopg2://${AIRFLOW_DB_USER:-airflow}:${AIRFLOW_DB_PASSWORD:?Missing .env - run ./scripts/bootstrap-env.sh first}@postgres:5432/${AIRFLOW_DB_NAME:-airflow}
+  AIRFLOW__OPERATORS__DEFAULT_QUEUE: airflow_tasks
+  AIRFLOW__CELERY__WORKER_CONCURRENCY: ${AIRFLOW_WORKER_CONCURRENCY:-4}
+  AIRFLOW__DAG_PROCESSOR__PARSING_PROCESSES: "1"
+  # Read by the DAG file when it is parsed (by the DAG processor and again by the worker).
+  PIPELINE_SCHEDULE_CRON: ${PIPELINE_SCHEDULE_CRON:-0 6 * * *}
+  PIPELINE_SCHEDULE_TIMEZONE: ${PIPELINE_SCHEDULE_TIMEZONE:-UTC}
+
+x-airflow: &airflow
+  build:
+    context: ./airflow
+    target: runtime
+  image: github-repo-analytics-airflow:local
+  environment: *airflow-environment
+  volumes:
+    # The image already contains the DAGs; mounting the folder read-only on top lets edits show
+    # up without a rebuild.
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - airflow-logs:/opt/airflow/logs
+  restart: unless-stopped
+
+x-airflow-depends-on: &airflow-depends-on
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  airflow-init:
+    condition: service_completed_successfully
+
 services:
   # ------------------------------------------------------------------------------------------------
   # Infrastructure
@@ -102,6 +149,88 @@ services:
         condition: service_completed_successfully
 
   # ------------------------------------------------------------------------------------------------
+  # Airflow (CeleryExecutor)
+  # ------------------------------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow
+    # One-shot: the image entrypoint migrates the metadata database and creates the admin user,
+    # then the command fails loudly if any migration is still missing.
+    environment:
+      <<: *airflow-environment
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?Missing .env - run ./scripts/bootstrap-env.sh first}
+    command: ["db", "check-migrations", "--migration-wait-timeout", "60"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  airflow-apiserver:
+    <<: *airflow
+    command: ["api-server"]
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    depends_on: *airflow-depends-on
+
+  airflow-scheduler:
+    <<: *airflow
+    command: ["scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
+    depends_on: *airflow-depends-on
+
+  airflow-dag-processor:
+    <<: *airflow
+    # Parses DAG files. In Airflow 3 this is always a separate process from the scheduler.
+    command: ["dag-processor"]
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
+    depends_on: *airflow-depends-on
+
+  airflow-worker:
+    <<: *airflow
+    # Executes every task instance, including each dynamically mapped one.
+    command: ["celery", "worker"]
+    environment:
+      <<: *airflow-environment
+      # Lets `docker compose stop` shut the Celery worker down gracefully.
+      DUMB_INIT_SETSID: "0"
+      # Connections exist only here: the worker is the one component that runs task code, so it
+      # is the only one that holds the GitHub and internal API tokens.
+      AIRFLOW_CONN_GITHUB_API: '{"conn_type": "http", "schema": "https", "host": "api.github.com", "password": "${GITHUB_TOKEN:-}"}'
+      AIRFLOW_CONN_DJANGO_INTERNAL_API: '{"conn_type": "http", "schema": "http", "host": "api", "port": 8000, "password": "${INTERNAL_API_TOKEN:?Missing .env - run ./scripts/bootstrap-env.sh first}"}'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      <<: *airflow-depends-on
+      airflow-apiserver:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------------------------------------
   # Test runners: `docker compose --profile test run --rm <service>`
   # ------------------------------------------------------------------------------------------------
   backend-tests:
@@ -117,5 +246,23 @@ services:
       postgres:
         condition: service_healthy
 
+  airflow-tests:
+    profiles: ["test"]
+    build:
+      context: ./airflow
+      target: test
+    image: github-repo-analytics-airflow-tests:local
+    # Self-contained: a throwaway SQLite metadata database and fake connections. Nothing here
+    # reaches the real services or the network.
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////tmp/airflow-tests.db
+      AIRFLOW_CONN_GITHUB_API: '{"conn_type": "http", "schema": "https", "host": "api.github.com", "password": "test-github-token"}'
+      AIRFLOW_CONN_DJANGO_INTERNAL_API: '{"conn_type": "http", "schema": "http", "host": "api", "port": 8000, "password": "test-internal-token"}'
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - cd /opt/airflow && ruff check dags tests && ruff format --check dags tests && airflow db migrate > /tmp/db-migrate.log 2>&1 && pytest
+
 volumes:
   postgres-data:
+  airflow-logs:
