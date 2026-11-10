@@ -6,15 +6,15 @@ and [CELERY.md](CELERY.md).
 
 ## 1. System architecture
 
-Arrows are requests, labelled with what is asked for. The browser only ever talks to nginx and,
-for the Airflow UI, to the Airflow API server.
+Arrows are requests, labelled with what is asked for. Arrows between the coloured groups name the
+service that makes the call. The browser only ever talks to nginx and, for the Airflow UI, to the
+Airflow API server.
 
-There is **one** Redis container and **one** PostgreSQL container. Each is drawn twice, next to
-the application that uses it, because each application only ever sees its own logical database
-on it.
+There is **one** Redis container and **one** PostgreSQL container. Each is drawn twice, inside the
+application that uses it, because each application only ever sees its own logical database on it.
 
 ```mermaid
-flowchart TB
+flowchart LR
     user([Browser])
     github[(GitHub REST API)]
 
@@ -23,40 +23,39 @@ flowchart TB
     end
 
     subgraph django [Django]
+        direction TB
         api["api<br/>Django + DRF on gunicorn"]
         redis1[("Redis db 1<br/>queue django_reports")]
         dworker["django-worker<br/>Celery worker"]
         pgapp[("PostgreSQL db analytics<br/>repositories, snapshots, reports")]
+        api -->|"publish report task"| redis1
+        redis1 -->|"deliver"| dworker
+        api --> pgapp
+        dworker --> pgapp
     end
 
     subgraph airflow [Airflow 3 with CeleryExecutor]
-        apiserver["airflow-apiserver<br/>UI, REST API, execution API"]
+        direction TB
         scheduler[airflow-scheduler]
         dagproc[airflow-dag-processor]
         redis0[("Redis db 0<br/>queue airflow_tasks")]
         aworker["airflow-worker<br/>Celery worker"]
+        apiserver["airflow-apiserver<br/>UI, REST API, execution API"]
         pgair[("PostgreSQL db airflow<br/>metadata, Celery results")]
+        scheduler -->|"publish task instances"| redis0
+        redis0 -->|"deliver"| aworker
+        aworker -->|"task state, XCom"| apiserver
+        scheduler --> pgair
+        dagproc --> pgair
+        apiserver --> pgair
     end
 
-    user -->|"dashboard and /api/"| nginx
-    user -->|"Airflow UI"| apiserver
-    nginx -->|"/api/ except /api/internal/"| api
-
-    api -->|"publish report task"| redis1
-    redis1 -->|"deliver"| dworker
-    api --> pgapp
-    dworker --> pgapp
-    api -->|"validate a new repository"| github
-
-    scheduler -->|"publish task instances"| redis0
-    redis0 -->|"deliver"| aworker
-    aworker -->|"task state, XCom"| apiserver
-    apiserver --> pgair
-    scheduler --> pgair
-    dagproc --> pgair
-    aworker -->|"Celery results"| pgair
-    aworker -->|"fetch metrics"| github
-    aworker -->|"/api/internal/ with bearer token"| api
+    user -->|"dashboard and /api/"| dashboard
+    dashboard -->|"/api/ except /api/internal/"| django
+    user -->|"Airflow UI"| airflow
+    airflow -->|"airflow-worker calls /api/internal/<br/>with a bearer token"| django
+    django -->|"api validates a new repository"| github
+    airflow -->|"airflow-worker fetches metrics"| github
 ```
 
 ## 2. Repository creation and validation
