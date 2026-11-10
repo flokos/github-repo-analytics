@@ -290,3 +290,46 @@ from data needs no extra writes and cannot drift.
 
 **Trade-off.** The dashboard shows what was collected, not why a run failed; for that it links to
 the Airflow UI.
+
+## 21. The dashboard is served from the API's origin; CORS is an allowlist for development
+
+**Decision.** nginx serves the built Vue application and proxies `/api/` to Django, so the browser
+talks to a single origin. nginx answers 404 for `/api/internal/`. Django's CORS configuration is an
+explicit allowlist (`CORS_ALLOWED_ORIGINS`) that by default contains only the Vite dev server's
+origin, which is the one case where the dashboard calls the API cross-origin.
+
+**Why.** Same-origin removes a whole class of "works on localhost but not on 127.0.0.1" problems
+and gives the internal endpoints a second barrier besides their token: they are not routed from
+the origin a browser uses. The allowlist keeps cross-origin access closed unless it is named.
+
+**Trade-off.** There are two ways to reach the API (through port 3000 and directly on port 8000),
+which the documentation has to explain. Django's port stays published on the loopback interface
+because it is useful for `curl` and for the dev server.
+
+## 22. Plain Vue 3: no router, no store, no UI framework
+
+**Decision.** The dashboard is one page built from single-file components with the Composition
+API, plain JavaScript and one stylesheet of CSS custom properties. Server state lives in one
+composable (`useDashboard`), and one module (`api/client.js`) talks to the backend and turns
+every failure into an `ApiError` with the API's stable error code.
+
+**Why.** One page with one owner of the data does not need a router or a state library, and the
+few visual elements do not justify a component framework. Fewer dependencies also mean a smaller
+bundle and less to keep up to date.
+
+**Trade-off.** No static typing. If the dashboard grew beyond one page, TypeScript and a router
+would be the first additions.
+
+## 23. One metric per chart, a single series each
+
+**Decision.** History is shown as three small line charts stacked above each other (stars, forks,
+open issues) that share one time range control and identical x positions. Each has one series, one
+y-axis fitted to its data, the latest value written at the end of the line, a crosshair tooltip,
+and a table with the same numbers. Chart.js draws them; only the line-chart pieces are registered.
+
+**Why.** The three metrics differ by orders of magnitude, so one plot would need several y-scales,
+and the alignment of independent scales suggests relationships that are not in the data. A table
+keeps every value reachable without hovering and without seeing colour.
+
+**Trade-off.** The y-axes do not start at zero (daily changes would be invisible otherwise), so the
+lines show change, not proportion; the axis labels and the exact figures say how large it is.

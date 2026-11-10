@@ -177,6 +177,30 @@ services:
         condition: service_healthy
 
   # ------------------------------------------------------------------------------------------------
+  # Dashboard
+  # ------------------------------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      target: runtime
+      args:
+        VITE_AIRFLOW_URL: http://localhost:${AIRFLOW_PORT:-8080}
+    image: github-repo-analytics-frontend:local
+    # nginx: serves the built Vue app and proxies /api/ to Django (but never /api/internal/).
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------------------------------------
   # Airflow (CeleryExecutor)
   # ------------------------------------------------------------------------------------------------
   airflow-init:
@@ -290,6 +314,38 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - cd /opt/airflow && ruff check dags tests && ruff format --check dags tests && airflow db migrate > /tmp/db-migrate.log 2>&1 && pytest
+
+  frontend-tests:
+    profiles: ["test"]
+    build:
+      context: ./frontend
+      target: dev
+    image: github-repo-analytics-frontend-dev:local
+    command: ["sh", "-c", "npm run lint && npm run test"]
+
+  # ------------------------------------------------------------------------------------------------
+  # Optional: `docker compose --profile dev up frontend-dev`
+  # ------------------------------------------------------------------------------------------------
+  frontend-dev:
+    profiles: ["dev"]
+    build:
+      context: ./frontend
+      target: dev
+    image: github-repo-analytics-frontend-dev:local
+    # Vite dev server with hot reload on http://localhost:5173. Unlike the nginx build it calls
+    # Django cross-origin, which is the case CORS_ALLOWED_ORIGINS exists for.
+    environment:
+      VITE_API_BASE_URL: http://localhost:${API_PORT:-8000}/api
+      VITE_AIRFLOW_URL: http://localhost:${AIRFLOW_PORT:-8080}
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/public:/app/public:ro
+      - ./frontend/index.html:/app/index.html:ro
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      api:
+        condition: service_healthy
 
 volumes:
   postgres-data:

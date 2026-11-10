@@ -1,6 +1,6 @@
 # Convenience wrappers around the documented `docker compose` commands.
 .DEFAULT_GOAL := help
-.PHONY: help env up down ps logs clean test test-backend test-airflow trigger
+.PHONY: help env up down ps logs clean test test-backend test-airflow test-frontend trigger dev-frontend
 
 help: ## List the available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "} {printf "  %-16s %s\n", $$1, $$2}'
@@ -20,13 +20,19 @@ ps: ## Show service status and health
 logs: ## Follow the logs of every service
 	docker compose logs --follow --tail 100
 
-test: test-backend test-airflow ## Run every test suite in containers
+test: test-backend test-airflow test-frontend ## Run every test suite in containers
 
 test-backend: env ## Lint and test the Django backend
 	docker compose --profile test run --rm --build backend-tests
 
 test-airflow: ## Lint and test the Airflow DAG
 	docker compose --profile test run --rm --build airflow-tests
+
+test-frontend: ## Lint and test the Vue dashboard
+	docker compose --profile test run --rm --build frontend-tests
+
+dev-frontend: ## Run the Vite dev server with hot reload on http://localhost:5173
+	docker compose --profile dev up --build frontend-dev
 
 trigger: ## Start a pipeline run now instead of waiting for the schedule
 	docker compose exec airflow-scheduler airflow dags trigger github_metrics_daily
