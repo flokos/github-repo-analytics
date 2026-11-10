@@ -8,7 +8,6 @@ from analytics.domain.reports import (
     Metrics,
     ReportStatus,
     SnapshotComparison,
-    can_transition,
     compare,
     sources_of,
     summarize,
@@ -145,7 +144,7 @@ def test_lines_serialise_to_plain_json_values():
     ],
 )
 def test_allowed_status_transitions(current, target):
-    assert can_transition(current, target)
+    assert ReportStatus(current) in sources_of(ReportStatus(target))
 
 
 @pytest.mark.parametrize(
@@ -161,7 +160,7 @@ def test_allowed_status_transitions(current, target):
     ],
 )
 def test_forbidden_status_transitions(current, target):
-    assert not can_transition(current, target)
+    assert ReportStatus(current) not in sources_of(ReportStatus(target))
 
 
 def test_only_a_running_report_can_complete_and_any_report_in_flight_can_fail():

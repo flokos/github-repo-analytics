@@ -292,8 +292,12 @@ services:
       target: test
     image: github-repo-analytics-backend-tests:local
     environment: *backend-environment
-    # Lint, format check, then the test suite against a throwaway PostgreSQL database.
-    command: ["sh", "-c", "ruff check . && ruff format --check . && pytest"]
+    # Lint, format check, a check that no migration is missing, then the test suite against a
+    # throwaway PostgreSQL database.
+    command:
+      - sh
+      - -c
+      - ruff check . && ruff format --check . && python manage.py makemigrations --check --dry-run && pytest
     depends_on:
       postgres:
         condition: service_healthy

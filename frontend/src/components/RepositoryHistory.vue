@@ -12,9 +12,9 @@ const props = defineProps({
 })
 
 const RANGES = [
-  { days: 30, label: '30 days' },
-  { days: 90, label: '90 days' },
-  { days: 365, label: '1 year' },
+  { days: 30, label: '30 days', phrase: 'the last 30 days' },
+  { days: 90, label: '90 days', phrase: 'the last 90 days' },
+  { days: 365, label: '1 year', phrase: 'the last year' },
 ]
 const METRICS = [
   { key: 'stars', title: 'Stars' },
@@ -80,7 +80,7 @@ const charts = computed(() =>
   })),
 )
 const newestFirst = computed(() => [...snapshots.value].reverse())
-const rangeLabel = computed(() => RANGES.find((range) => range.days === days.value).label)
+const rangePhrase = computed(() => RANGES.find((range) => range.days === days.value).phrase)
 </script>
 
 <template>
@@ -108,7 +108,7 @@ const rangeLabel = computed(() => RANGES.find((range) => range.days === days.val
 
     <p v-else-if="snapshots.length === 0" class="card empty" data-test="history-empty">
       <template v-if="repository.last_synced_at">
-        No snapshots in the last {{ rangeLabel }}. Choose a longer range to see older ones.
+        No snapshots in {{ rangePhrase }}. Choose a longer range to see older ones.
       </template>
       <template v-else>
         No metrics have been collected for this repository yet. They arrive with the next

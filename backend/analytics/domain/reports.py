@@ -31,12 +31,12 @@ _ALLOWED_TRANSITIONS: dict[ReportStatus, frozenset[ReportStatus]] = {
 IN_FLIGHT = frozenset({ReportStatus.QUEUED, ReportStatus.RUNNING})
 
 
-def can_transition(current: ReportStatus | str, target: ReportStatus | str) -> bool:
-    return ReportStatus(target) in _ALLOWED_TRANSITIONS[ReportStatus(current)]
-
-
 def sources_of(target: ReportStatus) -> frozenset[ReportStatus]:
-    """Every status a report may be in immediately before it becomes `target`."""
+    """Every status a report may be in immediately before it becomes `target`.
+
+    The use cases filter on this when they change a report's status, so a transition that is not
+    in the table above cannot be written.
+    """
     return frozenset(
         status for status, targets in _ALLOWED_TRANSITIONS.items() if target in targets
     )
