@@ -13,7 +13,7 @@ Versions were checked against PyPI, npm, Docker Hub and the Airflow repository o
 |---|---|---|
 | Apache Airflow | 3.3.2 (`apache/airflow:3.3.2-python3.13`) | 3.4.0 was four days old and includes an XCom storage migration; 3.3 had two patch releases |
 | Airflow Celery provider | 3.24.0 | The version in Airflow's `constraints-3.3.2`, shipped inside the official image |
-| Celery, kombu, redis-py | 5.6.3, 5.6.2, 6.4.0 | Django uses exactly the versions Airflow's constraints file tests, so both Celery systems run the same stack |
+| Celery, kombu, redis-py | 5.6.3, 5.6.2, 6.4.0 | Django uses exactly the versions Airflow's constraints file tests (also for billiard, amqp, vine and python-dateutil), so both Celery systems run the same stack |
 | Python | 3.13 | Default of the Airflow image and supported by every backend dependency |
 | Django | 5.2 LTS | Supported until April 2028; `django-cors-headers` and `pytest-django` did not yet declare support for 6.1 |
 | Django REST Framework | 3.18 | Declares support for Django 5.2 |
@@ -49,8 +49,9 @@ two independent brokers without a second container. Durable state (snapshots, re
 task state) lives in PostgreSQL, so losing Redis only loses messages in flight.
 
 **Trade-off.** A restart of Redis can drop a queued report request or a queued Airflow task.
-Airflow reschedules tasks whose messages were lost, and a stale report can be requested again
-(see the report idempotency rules in `docs/CELERY.md`).
+Airflow's scheduler notices task instances that stay `queued` for too long (`task_queued_timeout`,
+ten minutes by default) and handles them, and a report that stays in flight for more than 15
+minutes can be requested again (see the report idempotency rules in [CELERY.md](CELERY.md)).
 
 ## 4. Secrets are generated locally, never committed
 
@@ -333,3 +334,34 @@ keeps every value reachable without hovering and without seeing colour.
 
 **Trade-off.** The y-axes do not start at zero (daily changes would be invisible otherwise), so the
 lines show change, not proportion; the axis labels and the exact figures say how large it is.
+
+## 24. Application code is baked into the images; only the DAG folder is mounted
+
+**Decision.** The backend, the dashboard and the DAGs are copied into their images at build time,
+and containers run as unprivileged users. The one bind mount of code is `airflow/dags`, mounted
+read-only over the copy in the image.
+
+**Why.** Images are reproducible and behave the same on Linux, macOS and Windows, and no container
+writes into the working tree, which avoids root-owned files and the user-id juggling that
+writable mounts need. The DAG folder is the exception because editing a DAG and seeing Airflow
+pick it up within seconds is how DAGs are normally developed, and a read-only mount has none of
+those problems.
+
+**Trade-off.** A backend or dashboard change needs a rebuild of that service (seconds, thanks to
+layer caching). For front-end work with hot reload there is an optional Vite dev server.
+
+## 25. Tests run in containers, against the real thing where it matters
+
+**Decision.** Three suites, each in its own container. Backend tests use a real PostgreSQL database
+and mock GitHub at the HTTP level. Pipeline tests cover the plain-Python logic directly and run
+whole DAG runs in-process with `dag.test()` against a throwaway SQLite metadata database. Front-end
+tests mount components in jsdom with the API module mocked.
+
+**Why.** The guarantees this project relies on are database constraints, HTTP status handling and
+Airflow's own behaviour (mapping, trigger rules, retry policy), so those are exercised for real
+instead of being mocked away. Mocking HTTP at the transport level tests the actual clients, and
+any unregistered request fails the test, so nothing can reach GitHub by accident.
+
+**Trade-off.** The whole-run tests take a few seconds each and depend on Airflow's in-process
+runner. They proved their worth by exposing a real defect: with exactly one repository, Airflow
+hands a mapped result downstream as a bare value instead of a list.
